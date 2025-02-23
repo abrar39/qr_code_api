@@ -92,19 +92,19 @@ def generate_qr(request: QRRequest):
 @app.post("/generate_qr_supabase")
 def generate_qr_supabase(request: QRRequest):
     # Fetch product data from Supabase
-    response = supabase.table("products").select("*").eq("id", request.product_id).single().execute()
+    response = supabase.table("products").select("*").eq("id", request.id).single().execute()
     if response.data is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_data = response.data
-    product_info = f"Name: {product_data['name']}, Price: {product_data['price']}, SKU: {product_data['sku']}"
+    product_info = f"Name: {products['name']}, SN: {products['serial_number']}"
 
     encrypted_data = encrypt_data(product_info)
-    file_path = f"qr_{request.product_id}.png"
+    file_path = f"qr_{request.id}.png"
     qr = qrcode.make(encrypted_data)
     qr.save(file_path)
 
-    return FileResponse(file_path, media_type="image/png", filename=f"qr_{request.product_id}.png")
+    return FileResponse(file_path, media_type="image/png", filename=f"qr_{request.id}.png")
 
 @app.post("/decrypt_qr")
 def decrypt_qr(request: DecryptRequest):
