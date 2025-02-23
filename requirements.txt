@@ -5,3 +5,4 @@ rsa
 cryptography
 qrcode[pil]
 psycopg2-binary
+supabase

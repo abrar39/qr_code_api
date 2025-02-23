@@ -1,27 +1,58 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import qrcode
 import rsa
 import base64
 from cryptography.fernet import Fernet
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import io
+from supabase import create_client, Client
+import os
 
+# Create the FAST API app
 app = FastAPI()
 
+# Initialize Supabase
+SUPABASE_URL = "https://eysobfootyncwukoixym.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5c29iZm9vdHluY3d1a29peHltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzMDU3MzksImV4cCI6MjA1NTg4MTczOX0.-bxSZXmE71aYQ3FkMJUJuoWorc6Iar28TI12vXj2pTw"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 class QRRequest(BaseModel):
-    data : str
+    #data : str
+    product_id : int
 
 class DecryptRequest(BaseModel):
     encrypted_data : str
 
 # Generate encryption keys
-public_key, private_key = rsa.newkeys(512)
-fernet_key = Fernet.generate_key()
-cipher_suite = Fernet(fernet_key)
+# File paths for saving the keys
+PUBLIC_KEY_FILE = "public.pem"
+PRIVATE_KEY_FILE = "private.pem"
+
+def generate_keys():
+    """Generate a new RSA key pair and save them if they don't exist."""
+    if not (os.path.exists(PUBLIC_KEY_FILE) and os.path.exists(PRIVATE_KEY_FILE)):
+        public_key, private_key = rsa.newkeys(512)
+        with open(PUBLIC_KEY_FILE, "wb") as pub_file:
+            pub_file.write(public_key.save_pkcs1("PEM"))
+        with open(PRIVATE_KEY_FILE, "wb") as priv_file:
+            priv_file.write(private_key.save_pkcs1("PEM"))
+    else:
+        with open(PUBLIC_KEY_FILE, "rb") as pub_file:
+            public_key = rsa.PublicKey.load_pkcs1(pub_file.read())
+        with open(PRIVATE_KEY_FILE, "rb") as priv_file:
+            private_key = rsa.PrivateKey.load_pkcs1(priv_file.read())
+    
+    return public_key, private_key
+
+# Load or generate keys
+public_key, private_key = generate_keys()
+
+#public_key, private_key = rsa.newkeys(512)
+#fernet_key = Fernet.generate_key()
+#cipher_suite = Fernet(fernet_key)
 
 def encrypt_data(data: str) -> str:
-    """Encrypt data using RSA."""
+    """Encrypt data using the stored public key."""
     try:
         encrypted_data = rsa.encrypt(data.encode(), public_key)
         return base64.b64encode(encrypted_data).decode()
@@ -29,7 +60,7 @@ def encrypt_data(data: str) -> str:
         raise HTTPException(status_code=500, detail="Encryption failed: " + str(e))
 
 def decrypt_data(encrypted_data: str) -> str:
-    """Decrypt data using RSA."""
+    """Decrypt data using stored private key."""
     try:
         decoded_data = base64.b64decode(encrypted_data)
         return rsa.decrypt(decoded_data, private_key).decode()
@@ -56,6 +87,23 @@ def generate_qr(request: QRRequest):
         "encrypted_data" : encrypted_data,
         "qr_code_base64" : img_base64
     }
+
+@app.post("/generate_qr_supabase")
+def generate_qr_supabase(request: QRRequest):
+    # Fetch product data from Supabase
+    response = supabase.table("products").select("*").eq("id", request.product_id).single().execute()
+    if response.data is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    product_data = response.data
+    product_info = f"Name: {product_data['name']}, Price: {product_data['price']}, SKU: {product_data['sku']}"
+
+    encrypted_data = encrypt_data(product_info)
+    file_path = f"qr_{request.product_id}.png"
+    qr = qrcode.make(encrypted_data)
+    qr.save(file_path)
+
+    return FileResponse(file_path, media_type="image/png", filename=f"qr_{request.product_id}.png")
 
 @app.post("/decrypt_qr")
 def decrypt_qr(request: DecryptRequest):
