@@ -5,6 +5,7 @@ import base64
 from cryptography.fernet import Fernet
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import io
 
 app = FastAPI()
 
