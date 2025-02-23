@@ -97,7 +97,7 @@ def generate_qr_supabase(request: QRRequest):
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_data = response.data
-    product_info = f"Name: {products['name']}, SN: {products['serial_number']}"
+    product_info = f"Name: {product_data['name']}, SN: {product_data['serial_number']}"
 
     encrypted_data = encrypt_data(product_info)
     file_path = f"qr_{request.id}.png"
