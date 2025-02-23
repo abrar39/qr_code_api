@@ -18,7 +18,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class QRRequest(BaseModel):
     #data : str
-    product_id : int
+    #id : int
+    id : str    # to accept uuid
 
 class DecryptRequest(BaseModel):
     encrypted_data : str
