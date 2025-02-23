@@ -3,8 +3,13 @@ import qrcode
 import rsa
 import base64
 from cryptography.fernet import Fernet
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 app = FastAPI()
+
+class QRRequest(BaseModel):
+    data : str
 
 # Generate encryption keys
 public_key, private_key = rsa.newkeys(512)
@@ -26,11 +31,14 @@ def home():
     return {"message": "QR Code API is Running!"}
 
 @app.post("/generate_qr")
-def generate_qr(data: str):
-    encrypted_data = encrypt_data(data)
+def generate_qr(request: QRRequest):
+    encrypted_data = encrypt_data(request.data)
+    file_path = "qr_code.png" # to be used later to download file
     qr = qrcode.make(encrypted_data)
-    qr.save("qr_code.png")
-    return {"message": "QR code generated successfully", "encrypted_data": encrypted_data}
+    qr.save(file_path) # this saves the file in server
+    
+    #return {"message": "QR code generated successfully", "encrypted_data": encrypted_data}
+    return FileResponse(file_path, media_type="image/png", filename="qr_code.png")
 
 @app.post("/decrypt_qr")
 def decrypt_qr(encrypted_data: str):
