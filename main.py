@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # to enable CORS for use with frontend
 import qrcode
 import rsa
 import base64
@@ -10,6 +11,15 @@ import os
 
 # Create the FAST API app
 app = FastAPI()
+
+# Update allowed origins to include frontend's Render URL
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"], # React local URL. Update this to your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize Supabase
 SUPABASE_URL = "https://eysobfootyncwukoixym.supabase.co"
@@ -72,6 +82,11 @@ def decrypt_data(encrypted_data: str) -> str:
 def home():
     return {"message": "QR Code API is Running!"}
 
+@app.get("/products")
+def get_products():
+    response = supabase.table("products").select("*").execute()
+    return response.data
+
 @app.post("/generate_qr")
 def generate_qr(request: QRRequest):
     """Encrypt data Generate QR code for the given data as base64."""
@@ -105,6 +120,23 @@ def generate_qr_supabase(request: QRRequest):
     qr.save(file_path)
 
     return FileResponse(file_path, media_type="image/png", filename=f"qr_{request.id}.png")
+
+@app.post("/generate_qr/{product_id}")
+def generate_qr(product_id: str):
+    # Fetch product data from Supabase
+    response = supabase.table("products").select("*").eq("id", product_id).single().execute()
+    if response.data is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    product_data = response.data
+    product_info = f"Name: {product_data['name']}, SN: {product_data['serial_number']}"
+
+    encrypted_data = encrypt_data(product_info)
+    file_path = f"qr_{product_id}.png"
+    qr = qrcode.make(encrypted_data)
+    qr.save(file_path)
+
+    return FileResponse(file_path, media_type="image/png", filename=f"qr_{product_id}.png")
 
 @app.post("/decrypt_qr")
 def decrypt_qr(request: DecryptRequest):
