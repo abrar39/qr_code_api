@@ -1,21 +1,21 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # to enable CORS for use with frontend
+from fastapi.middleware.cors import CORSMiddleware
 import qrcode
 import rsa
 import base64
+import os
+import io
 from cryptography.fernet import Fernet
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
-import os
 
-# Create the FAST API app
 app = FastAPI()
 
-# Update allowed origins to include frontend's Render URL
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], # React local URL. Update this to your frontend URL
+    allow_origins=["http://localhost:5173"],  # Update to match frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,19 +26,23 @@ SUPABASE_URL = "https://eysobfootyncwukoixym.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5c29iZm9vdHluY3d1a29peHltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDAzMDU3MzksImV4cCI6MjA1NTg4MTczOX0.-bxSZXmE71aYQ3FkMJUJuoWorc6Iar28TI12vXj2pTw"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Define Request Models
+class ProductRequest(BaseModel):
+    name: str
+    description: str
+    serial_number: str
+
 class QRRequest(BaseModel):
-    #data : str
-    #id : int
-    id : str    # to accept uuid
+    id: str  # UUID of the product
 
 class DecryptRequest(BaseModel):
-    encrypted_data : str
+    encrypted_data: str
 
-# Generate encryption keys
-# File paths for saving the keys
+# File paths for RSA keys
 PUBLIC_KEY_FILE = "public.pem"
 PRIVATE_KEY_FILE = "private.pem"
 
+# Generate or Load RSA Keys
 def generate_keys():
     """Generate a new RSA key pair and save them if they don't exist."""
     if not (os.path.exists(PUBLIC_KEY_FILE) and os.path.exists(PRIVATE_KEY_FILE)):
@@ -55,28 +59,23 @@ def generate_keys():
     
     return public_key, private_key
 
-# Load or generate keys
 public_key, private_key = generate_keys()
 
-#public_key, private_key = rsa.newkeys(512)
-#fernet_key = Fernet.generate_key()
-#cipher_suite = Fernet(fernet_key)
-
 def encrypt_data(data: str) -> str:
-    """Encrypt data using the stored public key."""
+    """Encrypt data using RSA public key."""
     try:
         encrypted_data = rsa.encrypt(data.encode(), public_key)
         return base64.b64encode(encrypted_data).decode()
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Encryption failed: " + str(e))
+        raise HTTPException(status_code=500, detail=f"Encryption failed: {str(e)}")
 
 def decrypt_data(encrypted_data: str) -> str:
-    """Decrypt data using stored private key."""
+    """Decrypt data using RSA private key."""
     try:
         decoded_data = base64.b64decode(encrypted_data)
         return rsa.decrypt(decoded_data, private_key).decode()
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Decryption failed: " + str(e))
+        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
 
 @app.get("/")
 def home():
@@ -87,65 +86,52 @@ def get_products():
     response = supabase.table("products").select("*").execute()
     return response.data
 
+@app.post("/add_product")
+def add_product(request: ProductRequest):
+    """Insert a new product into Supabase."""
+    response = supabase.table("products").insert({
+        "name": request.name,
+        "description": request.description,
+        "serial_number": request.serial_number
+    }).execute()
+
+    if response.data:
+        return {"message": "Product added successfully", "product": response.data[0]}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to add product")
+
 @app.post("/generate_qr")
 def generate_qr(request: QRRequest):
-    """Encrypt data Generate QR code for the given data as base64."""
-    encrypted_data = encrypt_data(request.data)
-    qr = qrcode.make(encrypted_data)
-    #file_path = "qr_code.png" # to be used later to download file
-    # Save QR Code in memory instead of a file
-    img_buffer = io.BytesIO()    
-    qr.save(img_buffer, format="PNG") # this saves the file in server
-    img_base64 = base64.b64encode(img_buffer.getvalue()).decode("utf-8")
-    
-    return {
-        "message" : "QR Code generated successfully!",
-        "encrypted_data" : encrypted_data,
-        "qr_code_base64" : img_base64
-    }
-
-@app.post("/generate_qr_supabase")
-def generate_qr_supabase(request: QRRequest):
-    # Fetch product data from Supabase
+    """Fetch product details from Supabase, encrypt, and generate a QR code."""
     response = supabase.table("products").select("*").eq("id", request.id).single().execute()
+    
     if response.data is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_data = response.data
     product_info = f"Name: {product_data['name']}, SN: {product_data['serial_number']}"
-
     encrypted_data = encrypt_data(product_info)
-    file_path = f"qr_{request.id}.png"
+
+    # Generate QR Code
+    img_buffer = io.BytesIO()
     qr = qrcode.make(encrypted_data)
-    qr.save(file_path)
+    qr.save(img_buffer, format="PNG")
 
-    return FileResponse(file_path, media_type="image/png", filename=f"qr_{request.id}.png")
-
-@app.post("/generate_qr/{product_id}")
-def generate_qr(product_id: str):
-    # Fetch product data from Supabase
-    response = supabase.table("products").select("*").eq("id", product_id).single().execute()
-    if response.data is None:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    product_data = response.data
-    product_info = f"Name: {product_data['name']}, SN: {product_data['serial_number']}"
-
-    encrypted_data = encrypt_data(product_info)
-    file_path = f"qr_{product_id}.png"
-    qr = qrcode.make(encrypted_data)
-    qr.save(file_path)
-
-    return FileResponse(file_path, media_type="image/png", filename=f"qr_{product_id}.png")
+    # Return QR as base64 string
+    return {
+        "message": "QR Code generated successfully!",
+        "encrypted_data": encrypted_data,
+        "qr_code_base64": base64.b64encode(img_buffer.getvalue()).decode("utf-8")
+    }
 
 @app.post("/decrypt_qr")
 def decrypt_qr(request: DecryptRequest):
-    """Decrypt data from QR code."""
+    """Decrypt QR code data."""
     try:
         decrypted = decrypt_data(request.encrypted_data)
         return {"decrypted_data": decrypted}
     except Exception as e:
-        return {"error": f"Decryption failed {str(e)}"}
+        return {"error": f"Decryption failed: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
