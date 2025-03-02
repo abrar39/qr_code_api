@@ -76,6 +76,9 @@ class ScanRequest(BaseModel):
     scan_status: str
     location: str
 
+class DeleteRequest(BaseModel):
+    ids: list[uuid.UUID] # Expect multiple serial numbers
+
 
 # Define Ecnryption, Digital Signature, and Decryption Functions
 def encrypt_data(data: str) -> str:
@@ -137,6 +140,18 @@ def add_product(request: ProductRequest):
     else:
         raise HTTPException(status_code=500, detail="Failed to add product")
 
+
+@app.delete("/delete_product")
+def delete_product(request: DeleteRequest):
+    """Delete a product from Supabase."""
+    # delete multiple products from supabase products table
+    response = supabase.table("products").delete().in_("id", request.ids).execute()
+
+    if response.data:
+        return {"message": "Product deleted successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete product")
+    
 
 
 @app.post("/generate_qr")
