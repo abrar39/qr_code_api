@@ -14,10 +14,16 @@ import datetime
 
 app = FastAPI()
 
+origins = [
+    "http://localhost",
+    "http://localhost:5173",
+    "https://qr-code-api-a29l.onrender.com"
+]
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update to match frontend URL
+    allow_origins=origins,  # Update to match frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,14 +156,16 @@ def generate_qr(request: QRRequest):
 
     # Store the QR data in DB
     qr_code_id = str(uuid.uuid4())
-    response = supabase.table("qr_codes").insert({
-        "id": qr_code_id,
-        "product_id": product_data["id"],
-        "encrypted_data": encrypted_data,
-        "digital_signature": digital_signature,
-        "created_at": str(datetime.datetime.now(datetime.timezone.utc))
-    }).execute()
-
+    try:
+        response = supabase.table("qr_codes").insert({
+            "id": qr_code_id,
+            "product_id": product_data["id"],
+            "encrypted_data": encrypted_data,
+            "digital_signature": digital_signature,
+            "created_at": str(datetime.datetime.now(datetime.timezone.utc))
+        }).execute()
+    except Exception as e:
+        return {"error": f"Failed to store QR data: {str(e)}"}
     # Generate QR Code Image
     img_buffer = io.BytesIO()
     qr = qrcode.make(encrypted_data)
