@@ -17,7 +17,7 @@ app = FastAPI()
 origins = [
     "http://localhost",
     "http://localhost:5173",
-    "https://qr-code-api-a29l.onrender.com"
+    "https://qr-code-frontend-livid.vercel.app"
 ]
 
 # Enable CORS
