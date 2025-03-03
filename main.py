@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import qrcode
+import qrcode.constants
 import rsa
 import base64
 import os
@@ -69,6 +70,7 @@ class QRRequest(BaseModel):
 
 class DecryptRequest(BaseModel):
     encrypted_data: str
+    #signature: str
 
 class ScanRequest(BaseModel):
     qr_code_id: str
@@ -156,42 +158,59 @@ def delete_product(request: DeleteRequest):
 
 @app.post("/generate_qr")
 def generate_qr(request: QRRequest):
-    """Fetch product details from Supabase, encrypt, and generate a QR code."""
+    """
+    Fetch product details from Supabase, encrypt, sign, and generate a QR code. 
+    Store the QR data in the database. Finally, return the QR code as a base64 string.
+    """
+
     response = supabase.table("products").select("*").eq("id", request.id).single().execute()
     
     if response.data is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_data = response.data
-    product_info = f"Name: {product_data['name']}, SN: {product_data['serial_number']}"
+    product_info = f"Name: {product_data['name']} | SN: {product_data['serial_number']}"
     
     # Encrypt and Sign the product data
-    encrypted_data = encrypt_data(product_info)
-    digital_signature = sign_data(product_info)
+    encrypted_data = encrypt_data(product_info) # encrypt the product data
+    #digital_signature = sign_data(product_info)
+    signed_data = sign_data(encrypted_data) # add signature to the encrypted data
 
     # Store the QR data in DB
     qr_code_id = str(uuid.uuid4())
     try:
+        # Insert the product data into the qr_codes table
         response = supabase.table("qr_codes").insert({
             "id": qr_code_id,
             "product_id": product_data["id"],
             "encrypted_data": encrypted_data,
-            "digital_signature": digital_signature,
+            "digital_signature": signed_data,
             "created_at": str(datetime.datetime.now(datetime.timezone.utc))
         }).execute()
     except Exception as e:
         return {"error": f"Failed to store QR data: {str(e)}"}
     # Generate QR Code Image
     img_buffer = io.BytesIO()
-    qr = qrcode.make(encrypted_data)
-    qr.save(img_buffer, format="PNG")
+
+    qr = qrcode.QRCode(
+        version=10, # controls the size
+        error_correction=qrcode.constants.ERROR_CORRECT_H, # High error correction
+        box_size=10, # size of each box in pixels
+        border=4, # border size
+    )
+    qr.add_data(encrypted_data)
+    qr.make(fit=True)
+    #qr = qrcode.make(encrypted_data)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img.save(img_buffer, format="PNG")
+    #qr.save(img_buffer, format="PNG")
 
     # Return QR as base64 string
     return {
         "message": "QR Code generated successfully!",
         "qr_code_id": qr_code_id,
         "encrypted_data": encrypted_data,
-        "digital_signature": digital_signature,
+        "digital_signature": signed_data,
         "qr_code_base64": base64.b64encode(img_buffer.getvalue()).decode("utf-8")
     }
 
