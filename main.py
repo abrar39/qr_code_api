@@ -74,9 +74,11 @@ class DecryptRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     qr_code_id: str
+    scanned_data: str
+    #signature: str
     scanned_by: str
-    scan_status: str
-    location: str
+    #scan_status: str
+    location: str = None
 
 class DeleteRequest(BaseModel):
     ids: list[uuid.UUID] # Expect multiple serial numbers
@@ -86,22 +88,43 @@ class DeleteRequest(BaseModel):
 def encrypt_data(data: str) -> str:
     """Encrypt data using RSA public key."""
     try:
+        # The data is encoded to bytes before encryption because RSA requires bytes
         encrypted_data = rsa.encrypt(data.encode(), public_key)
+        # The data is decoded using base64 to convert it to a string
         return base64.b64encode(encrypted_data).decode()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Encryption failed: {str(e)}")
 
-def decrypt_data(encrypted_data: str) -> str:
+def decrypt_data(encrypted_data: str) -> tuple:
     """Decrypt data using RSA private key."""
     try:
+        # Decode base64
         decoded_data = base64.b64decode(encrypted_data)
-        return rsa.decrypt(decoded_data, private_key).decode()
+        
+        # Decrypt using RSA
+        decrypted_data = rsa.decrypt(decoded_data, private_key).decode()
+
+        return True, decrypted_data
+
+    except (base64.binascii.Error, ValueError) as e:
+        # base64 decoding or RSA decryption failed (invalid input, incorrect padding, etc.)
+        raise HTTPException(status_code=400, detail="Invalid encrypted data format.")
+
+    except rsa.DecryptionError:
+        # Raised if decryption fails (wrong key, corrupted data, etc.)
+        raise HTTPException(status_code=401, detail="Decryption failed due to incorrect key or corrupted data.")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
+        # Catch any other unexpected error
+        raise HTTPException(status_code=500, detail="An unexpected error occurred during decryption.")
     
 def sign_data(data: str) -> str:
     """Sign data using RSA private key."""
+    # A signature of the encoded (from string to bytes) data is generated
+    # using the private key and SHA-256 Hashing Algorithm
     signature = rsa.sign(data.encode(), private_key, "SHA-256")
+    # The signature is decoded to convert it to a string and 
+    # base64 encoding is used to convert to safe (for printing) characters
     return base64.b64encode(signature).decode()
 
 def verify_signature(data: str, signature: str) -> bool:
@@ -109,10 +132,25 @@ def verify_signature(data: str, signature: str) -> bool:
     try:
         decoded_signature = base64.b64decode(signature)
         rsa.verify(data.encode(), decoded_signature, public_key)
+        
         return True
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Signature verification failed: {str(e)}")
+    except rsa.VerificationError:
+        # Signatured don't match
         return False
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Signature verification failed: {str(e)}")
+
+def convert_qr_to_data_and_signature(qr_code: str) -> tuple:
+    """Convert the QR code to data and signature."""
+    try:
+        # Check if the data is in desired format
+        qr_code = qr_code.split("|")
+        data = qr_code[0].strip().split(":")[1].strip()
+        signature = qr_code[1].strip().split(":")[1].strip()
+        return data, signature
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid QR Code: {str(e)}")
 
 
 # API ROUTES
@@ -169,26 +207,20 @@ def generate_qr(request: QRRequest):
         raise HTTPException(status_code=404, detail="Product not found")
 
     product_data = response.data
-    product_info = f"Name: {product_data['name']} | SN: {product_data['serial_number']}"
+    
+    # product_info = f"Name: {product_data['name']} | SN: {product_data['serial_number']}"
+    product_info = f"{product_data['id']}"
     
     # Encrypt and Sign the product data
     encrypted_data = encrypt_data(product_info) # encrypt the product data
-    #digital_signature = sign_data(product_info)
-    signed_data = sign_data(encrypted_data) # add signature to the encrypted data
+    digital_signature = sign_data(product_info) # generate digital signature for the encrypted data
+
+    # Concatenate the data and digital signatures to create the QR code
+    product_data_and_signature = f"data: {encrypted_data} | signature: {digital_signature}"
 
     # Store the QR data in DB
     qr_code_id = str(uuid.uuid4())
-    try:
-        # Insert the product data into the qr_codes table
-        response = supabase.table("qr_codes").insert({
-            "id": qr_code_id,
-            "product_id": product_data["id"],
-            "encrypted_data": encrypted_data,
-            "digital_signature": signed_data,
-            "created_at": str(datetime.datetime.now(datetime.timezone.utc))
-        }).execute()
-    except Exception as e:
-        return {"error": f"Failed to store QR data: {str(e)}"}
+    
     # Generate QR Code Image
     img_buffer = io.BytesIO()
 
@@ -198,50 +230,83 @@ def generate_qr(request: QRRequest):
         box_size=10, # size of each box in pixels
         border=4, # border size
     )
-    qr.add_data(encrypted_data)
+    qr.add_data(product_data_and_signature)
     qr.make(fit=True)
-    #qr = qrcode.make(encrypted_data)
     img = qr.make_image(fill_color="black", back_color="white")
     img.save(img_buffer, format="PNG")
-    #qr.save(img_buffer, format="PNG")
+    qr_code_base64 = base64.b64encode(img_buffer.getvalue()).decode("utf-8")
+
+    # Save the data into database
+    try:
+        # Insert the encrypted data and digital signatures into the qr_codes table
+        response = supabase.table("qr_codes").insert({
+            "id": qr_code_id,
+            "product_id": product_data["id"],
+            "encrypted_data": encrypted_data,
+            "digital_signature": digital_signature,
+            "created_at": str(datetime.datetime.now(datetime.timezone.utc)), 
+            "qr_code": qr_code_base64
+        }).execute()
+    except Exception as e:
+        return {"error": f"Failed to store QR data: {str(e)}"}
 
     # Return QR as base64 string
     return {
         "message": "QR Code generated successfully!",
         "qr_code_id": qr_code_id,
         "encrypted_data": encrypted_data,
-        "digital_signature": signed_data,
-        "qr_code_base64": base64.b64encode(img_buffer.getvalue()).decode("utf-8")
+        "digital_signature": digital_signature,
+        "product_data_and_signature": product_data_and_signature,
+        "qr_code_base64": qr_code_base64
     }
 
-@app.post("/decrypt_qr")
-def decrypt_qr(request: DecryptRequest):
-    """Decrypt QR code data and Verify the Signature."""
-    try:
-        decrypted = decrypt_data(request.encrypted_data)
-        signature_valid = verify_signature(decrypted, request.signature)
-        return {"decrypted_data": decrypted, "signature_valid": signature_valid}
-
-    except Exception as e:
-        return {"error": f"Decryption failed: {str(e)}"}
-    
 
 @app.post("/scan_qr")
 def scan_qr(request: ScanRequest):
-    """Record a scan event in the database."""
-    response = supabase.table("scans").insert({
-        "id": str(uuid.uuid4()),
-        "qr_code_id": request.qr_code_id,
-        "scan_time": str(datetime.datetime.now(datetime.timezone.utc)),
-        "scanned_by": request.scanned_by,
-        "scan_status": request.scan_status,
-        "location": request.location
-    }).execute()
+    """
+    Scan the QR. Decrypt the data and verify the signature.
+    Finally store the scan event in the database
+    """
+    
+    # Record a scan event in the database.
+    scan_event_id = str(uuid.uuid4())
+    scan_time = str(datetime.datetime.now(datetime.timezone.utc))
+    
+    # Get QR data and signature from the response
+    scanned_qr_data, signature = convert_qr_to_data_and_signature(request.scanned_data)
+    
+    # Decrypt the scanned data
+    is_decryption_successful = False
+    try:
+        is_decryption_successful, decrypted_data = decrypt_data(scanned_qr_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Decryption failed: {str(e)}")
+    
+    # Verify the signature
+    try:
+        is_valid = verify_signature(decrypted_data, signature)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Signature verification failed: {str(e)}")
 
-    if response.data:
-        return {"message": "Scan event recorded successfully", "scan_event": response.data[0]}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to record scan event")
+    qry_response = supabase.table("scans").insert({
+        "id": scan_event_id,
+        "qr_code_id": request.qr_code_id,
+        "scan_time": scan_time,
+        "scanned_by": request.scanned_by,
+        "location": request.location,
+        "scan_status": "valid" if is_valid and is_decryption_successful else "tampered"
+    }).execute()
+    
+    return {
+        #"qr_code_id": request.qr_code_id,      # required for debugging
+        #"scanned_data": request.scanned_data,  # required for debugging
+        #"scanned_by": request.scanned_by,      # required for debugging
+        #"location": request.location,          # required for debugging
+        #"decrypted_data": decrypted_data,      # required for debugging
+        "signature_verified": is_valid,
+        "decryption_successful": is_decryption_successful
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
